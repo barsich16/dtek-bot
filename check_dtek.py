@@ -7,47 +7,57 @@ from datetime import datetime
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
-# Group ID from DTEK (1=Kyiv group 1, 2=group 2, etc.)
-GROUP_ID = os.environ.get("DTEK_GROUP", "1")
+# Your outage group number (1–6 for Kyiv, check yasno.com.ua to find yours)
+GROUP = os.environ.get("DTEK_GROUP", "6.1")
+# Region: "kiev" or "dnipro"
+REGION = os.environ.get("DTEK_REGION", "kiev")
 
 STATE_FILE = "last_state.json"
-DTEK_API_URL = (
-    "https://api.dtek.ua/api/power-off-schedule/v2/schedule"
-    f"?groupId={GROUP_ID}"
-)
+API_URL = "https://api.yasno.com.ua/api/v1/pages/home/schedule-turn-off-electricity"
 
 
 def fetch_schedule() -> dict:
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-    }
-    r = requests.get(DTEK_API_URL, headers=headers, timeout=15)
+    r = requests.get(API_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
     r.raise_for_status()
     return r.json()
 
 
+def hours_to_time(h: float) -> str:
+    """Convert float hours (e.g. 12.5) to HH:MM string."""
+    total_minutes = int(h * 60)
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def format_slots(slots: list) -> str:
+    if not slots:
+        return "no outages"
+    parts = []
+    for slot in slots:
+        start = hours_to_time(slot["start"])
+        end = hours_to_time(slot["end"])
+        kind = slot.get("type", "")
+        emoji = "🔴" if "DEFINITE" in kind else "🟡"
+        parts.append(f"{emoji} {start}–{end}")
+    return ", ".join(parts)
+
+
 def format_message(data: dict) -> str:
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    lines = [f"⚡ <b>DTEK schedule update</b> ({now})\n"]
+    lines = [f"⚡ <b>YASNO schedule update</b> — group {GROUP} ({now})\n"]
 
-    schedules = data.get("schedules") or data.get("data") or []
-    if not schedules:
-        # Fallback: dump raw if structure is unknown
+    daily = data.get("dailySchedule", {}).get(REGION, {})
+    for period in ("today", "tomorrow"):
+        entry = daily.get(period)
+        if not entry:
+            continue
+        date_label = period.capitalize()
+        groups = entry.get("groups", {})
+        slots = groups.get(GROUP) or []
+        lines.append(f"<b>{date_label}</b>: {format_slots(slots)}")
+
+    if len(lines) == 1:
+        # Fallback: unknown structure, dump raw
         lines.append(f"<pre>{json.dumps(data, indent=2, ensure_ascii=False)[:3000]}</pre>")
-        return "\n".join(lines)
-
-    for entry in schedules[:7]:  # limit to 7 days
-        date = entry.get("date", "")
-        intervals = entry.get("disconnectionIntervals") or entry.get("intervals") or []
-        if intervals:
-            times = ", ".join(
-                f"{iv.get('startTime','?')}–{iv.get('endTime','?')}"
-                for iv in intervals
-            )
-            lines.append(f"<b>{date}</b>: {times}")
-        else:
-            lines.append(f"<b>{date}</b>: no outages")
 
     return "\n".join(lines)
 
@@ -86,8 +96,16 @@ def git_commit_state() -> None:
 
 def main() -> None:
     data = fetch_schedule()
+
+    # Only hash the region+group data so unrelated regions don't trigger noise
+    region_data = data.get("dailySchedule", {}).get(REGION, {})
+    relevant = {
+        period: entry.get("groups", {}).get(GROUP)
+        for period, entry in region_data.items()
+        if isinstance(entry, dict)
+    }
     current_hash = hashlib.md5(
-        json.dumps(data, sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(relevant, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
 
     last_hash = load_last_hash()
@@ -101,5 +119,5 @@ def main() -> None:
         print("No change detected.")
 
 
-if __name__ == "__main__":
+if name == "__main__":
     main()
