@@ -1,0 +1,34 @@
+name: DTEK Monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes
+  workflow_dispatch: # allow manual trigger
+
+permissions:
+  contents: write # needed to commit last_state.json back
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use a PAT so the push in check_dtek.py can trigger future workflows
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run DTEK monitor
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          DTEK_GROUP: ${{ vars.DTEK_GROUP || '1' }}
+        run: python check_dtek.py
